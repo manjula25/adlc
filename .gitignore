@@ -1,0 +1,21 @@
+# env / secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# deps / build
+node_modules/
+**/node_modules/
+.next/
+dist/
+build/
+*.tsbuildinfo
+
+# logs / tmp / test
+*.log
+coverage/
+playwright-report/
+test-results/
+
+# os
+.DS_Store

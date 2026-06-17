@@ -1,0 +1,14 @@
+# Every PR requires review from the dev team. With branch protection
+# ("require review from Code Owners"), this is what makes Developer the
+# only role that can satisfy a merge to main — BA/QA/Codex cannot self-approve.
+#
+# Replace @your-org/developers with the real GitHub team before enabling.
+
+*                       @your-org/developers
+
+# AI layer is developer-owned (see ROLES.md). Keep tight control.
+/.claude/                @your-org/developers
+/.agents/                @your-org/developers
+/.github/                @your-org/developers
+/ROLES.md                @your-org/developers
+/MODEL-ROUTING.md        @your-org/developers

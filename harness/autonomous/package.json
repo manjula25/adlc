@@ -1,0 +1,19 @@
+{
+  "name": "@adlc/autonomous",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "proof": "tsx src/proof.ts",
+    "proof:unit": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}
