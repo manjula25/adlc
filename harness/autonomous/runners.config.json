@@ -1,0 +1,15 @@
+{
+  "skillsDir": "adlc/skills",
+  "priority": ["codex", "opencode", "claude"],
+  "runners": {
+    "codex": {
+      "kind": "codex",
+      "model": "gpt-5.5",
+      "reasoningEffort": "low",
+      "timeoutMs": 300000
+    },
+    "opencode": { "kind": "opencode", "model": "openai/gpt-5.5", "timeoutMs": 300000 },
+    "claude": { "kind": "claude", "timeoutMs": 300000 }
+  },
+  "budgets": { "codex": null, "opencode": null, "claude": null }
+}

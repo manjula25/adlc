@@ -2,9 +2,16 @@
   "name": "@adlc/autonomous",
   "private": true,
   "type": "module",
+  "bin": {
+    "conductor": "src/cli.ts"
+  },
   "scripts": {
+    "conductor": "node --import tsx src/cli.ts",
     "proof": "tsx src/proof.ts",
+    "proof:gpt": "node --import tsx src/proof-gpt.ts",
     "proof:unit": "vitest run",
+    "proof:e2e": "node --import tsx/esm src/proof-e2e.ts",
+    "proof:live": "node --import tsx/esm src/proof-live.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -7,15 +7,13 @@ The plan has intentionally ambiguous choices around output format, database, and
 function printReport(report: {
   asked: number;
   answered: number;
-  deferred: number;
-  promptedHuman: boolean;
+  lowConfidence: number;
   finalText: string;
 }): void {
   console.log("PROOF REPORT");
   console.log(`asked: ${report.asked}`);
   console.log(`answered: ${report.answered}`);
-  console.log(`deferred: ${report.deferred}`);
-  console.log(`promptedHuman: ${report.promptedHuman}`);
+  console.log(`lowConfidence: ${report.lowConfidence}`);
   console.log(`finalText: ${report.finalText.slice(0, 200)}`);
 }
 
@@ -29,8 +27,7 @@ try {
   printReport(report);
 
   const passed =
-    report.promptedHuman === false &&
-    report.answered + report.deferred === report.asked &&
+    report.answered + report.lowConfidence === report.asked &&
     report.asked >= 0;
 
   process.exit(passed ? 0 : 1);

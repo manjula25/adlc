@@ -1,13 +1,13 @@
 import { query, type CanUseTool, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
+import { appendAssumption } from "./assumptions.js";
 import { BRIEF } from "./brief.js";
 import { answerQuestions, type AskQuestion } from "./po-agent.js";
 
 export interface ConductorResult {
   asked: number;
   answered: number;
-  deferred: number;
-  promptedHuman: boolean;
+  lowConfidence: number;
   finalText: string;
 }
 
@@ -53,7 +53,7 @@ function textFromMessage(message: unknown): string {
     .join("");
 }
 
-export async function runConductor(prompt: string): Promise<ConductorResult> {
+export async function runConductor(prompt: string, repoDir?: string): Promise<ConductorResult> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error("Set ANTHROPIC_API_KEY to run the headless conductor integration proof.");
   }
@@ -61,8 +61,7 @@ export async function runConductor(prompt: string): Promise<ConductorResult> {
   const result: ConductorResult = {
     asked: 0,
     answered: 0,
-    deferred: 0,
-    promptedHuman: false,
+    lowConfidence: 0,
     finalText: "",
   };
 
@@ -75,11 +74,11 @@ export async function runConductor(prompt: string): Promise<ConductorResult> {
     }
 
     if (!isAskUserQuestionInput(input)) {
-      result.deferred += 1;
+      // ponytail: malformed input — deny without interrupt so the model retries
       return {
         behavior: "deny",
-        message: "AskUserQuestion input did not include a questions array; deferring to caller.",
-        interrupt: true,
+        message: "AskUserQuestion input did not include a questions array.",
+        interrupt: false,
       };
     }
 
@@ -87,12 +86,19 @@ export async function runConductor(prompt: string): Promise<ConductorResult> {
     const { answers, confident } = answerQuestions(input.questions, BRIEF);
 
     if (!confident) {
-      result.deferred += input.questions.length;
-      return {
-        behavior: "deny",
-        message: "Decision oracle confidence was too low; deferring to caller.",
-        interrupt: true,
-      };
+      result.lowConfidence += input.questions.length;
+      if (repoDir) {
+        for (const q of input.questions) {
+          appendAssumption(repoDir, {
+            phase: "conductor",
+            question: q.question,
+            decision: String(answers[q.question] ?? q.options[0]?.label ?? "unknown"),
+            confidence: 0.0,
+            grounding: "no grounding — default",
+            at: new Date().toISOString(),
+          });
+        }
+      }
     }
 
     result.answered += input.questions.length;

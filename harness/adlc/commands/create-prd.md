@@ -98,11 +98,20 @@ Create a well-structured PRD with the following sections. Adapt depth and detail
 
 ## Instructions
 
+### 0. Gather Requirements (dispatch BA agent)
+- Dispatch the **`ba-agent`** subagent (isolated context) to grill the design summary
+  against the BRIEF + POLICY and return a firm, testable REQUIREMENTS summary
+  (Functional / Data / Non-functional / `## UNRESOLVED`).
+- Use that summary as the spine of the PRD — do not re-derive requirements in the main
+  context. In autonomous mode this is the GRILL phase (`grill-with-docs` skill); the
+  `ba-agent` is its in-session equivalent.
+
 ### 1. Extract Requirements
-- Review the entire conversation history
+- Start from the BA agent's REQUIREMENTS summary; fold in conversation history for context.
 - Identify explicit requirements and implicit needs
 - Note technical constraints and preferences
 - Capture user goals and success criteria
+- Carry any `## UNRESOLVED` items into the PRD's assumptions/risks — never silently drop.
 
 ### 2. Synthesize Information
 - Organize requirements into appropriate sections

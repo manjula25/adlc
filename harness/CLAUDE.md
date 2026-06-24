@@ -48,7 +48,7 @@ harness/
 ├── .claude/
 │   ├── commands/   # lifecycle slash-commands (prime, plan-feature, implement-codex, ...)
 │   ├── skills/     # codex-bridge★, agent-browser, e2e-test, vercel-deploy★, supabase-migrations★
-│   └── agents/     # reviewer★, qa-agent★, deploy-agent★  (judgment only — none write code)
+│   └── agents/     # ba-agent★, qa-agent★, reviewer★, deploy-agent★  (judgment only — none write code)
 ├── .agents/
 │   ├── CLAUDE-template.md       # rules template → project CLAUDE.md via /create-rules
 │   ├── roles/                   # role defs + permission-matrix.md
@@ -146,3 +146,8 @@ tokens (Codex) on bulk implementation.
 - The four golden rules: context is precious (reset between plan/implement); commandify everything;
   git log = long-term memory; system-evolution mindset.
 - Design generation is expensive — batch it, capture once as `.dc.html`, never regenerate weekdays.
+- **Autonomous (zero-human) mode overrides the human flow above.** When run headlessly, the lifecycle
+  follows `docs/PROCESS.md` and `docs/ADLC-AUTONOMY-PLAN.md` §2/§8: doubts are auto-decided + logged to
+  `ASSUMPTIONS.md` (never paused); ship = deploy the feature branch to a Vercel preview + email the URL
+  (no in-loop merge — `main` merged offline). TDD is mandatory; spec-review + code-review run between
+  every implementation task.

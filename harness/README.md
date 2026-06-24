@@ -42,7 +42,7 @@ Model routing rationale: `MODEL-ROUTING.md`.
 .claude/commands/   prime create-prd create-rules plan-feature execute commit init-project   (base)
                     implement-codex★ qa-plan★ qa-run★ add-regression★ code-review★ deploy★ rollback★
 .claude/skills/     agent-browser · e2e-test   (base)   |   codex-bridge★ vercel-deploy★ supabase-migrations★
-.claude/agents/     qa-agent★ · deploy-agent★ · reviewer★
+.claude/agents/     ba-agent★ · qa-agent★ · reviewer★ · deploy-agent★
 .agents/CLAUDE-template.md   rules template (→ project CLAUDE.md via /create-rules)
 .agents/reference/  on-demand context — see reference/README.md (per-project; empty in template)
 .agents/plans/      per-feature PIV plans   (PRD → PRD.md, per link-in-bio)

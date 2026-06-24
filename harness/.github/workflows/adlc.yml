@@ -1,0 +1,62 @@
+# ADLC trigger — design link in → deployed preview out (zero-human).
+# Fires when a DESIGN_LINK file is pushed, or manually via the Actions tab.
+# This is the thin wrapper over `conductor run --live`; the engine lives in autonomous/.
+name: adlc
+
+on:
+  push:
+    paths: ["DESIGN_LINK"]        # one line: a design URL or repo-relative html path
+  workflow_dispatch:
+    inputs:
+      link:
+        description: "Design link (URL or path). Overrides DESIGN_LINK file."
+        required: false
+        type: string
+
+# One run at a time — provisioning is not safe to parallelise across the shared Supabase.
+concurrency:
+  group: adlc-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve design link
+        id: link
+        run: |
+          LINK="${{ inputs.link }}"
+          if [ -z "$LINK" ] && [ -f DESIGN_LINK ]; then LINK="$(head -n1 DESIGN_LINK)"; fi
+          if [ -z "$LINK" ]; then echo "No design link (input or DESIGN_LINK file)"; exit 1; fi
+          echo "value=$LINK" >> "$GITHUB_OUTPUT"
+
+      - name: Install engine deps
+        working-directory: harness/autonomous
+        run: npm ci
+
+      - name: Run conductor (live)
+        working-directory: harness/autonomous
+        run: npm run conductor -- run --link "${{ steps.link.outputs.value }}" --live
+        env:
+          # gh CLI uses this for repo create/push
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # cloud — set these as repository secrets
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          ADLC_NOTIFY_EMAIL: ${{ secrets.ADLC_NOTIFY_EMAIL }}
+          # LLM runners — see caveat below. Provide whatever the codex/claude CLI auth needs.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# CAVEAT — LLM runner auth in CI is the one non-trivial piece. The codex/claude CLIs are
+# interactive-login by default; on a hosted runner they need key-based auth (env keys above)
+# or a self-hosted runner already logged in. Validate locally via LIVE-PROOF.md first, then
+# wire whichever auth your codex/claude CLI accepts headlessly. Everything else here is plumbing.

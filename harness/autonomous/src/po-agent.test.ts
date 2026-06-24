@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { Brief } from "./brief.js";
-import { answerQuestions } from "./po-agent.js";
+import type { Policy } from "./config.js";
+import { answerQuestions, poAnswerOne, poAnswerLLM } from "./po-agent.js";
 
 const brief: Brief = {
   project: "Test project",
@@ -75,5 +76,68 @@ describe("answerQuestions", () => {
     expect(result.answers["Which authentication methods should be included?"]).toEqual([
       "email + password",
     ]);
+  });
+});
+
+describe("poAnswerOne", () => {
+  it("returns a confident answer with grounding when the question matches a brief decision key", () => {
+    const result = poAnswerOne("What database should the feature use?", brief);
+    expect(result).toEqual({
+      answer: "Postgres",
+      confident: true,
+      grounding: "BRIEF.decisions.database",
+    });
+  });
+
+  it("returns low confidence with a best-effort answer and grounding when no brief key matches", () => {
+    const result = poAnswerOne("What retention policy should the feature use?", brief);
+    expect(result.confident).toBe(false);
+    expect(typeof result.answer).toBe("string");
+    expect(result.answer.length).toBeGreaterThan(0);
+    expect(result.grounding).toBe("no grounding — default");
+  });
+});
+
+describe("poAnswerLLM", () => {
+  const policy: Policy = { rules: ["prefer managed services"], confidenceThreshold: 0.7 };
+
+  it("returns confident=true when model confidence meets the policy threshold", async () => {
+    const model = {
+      ask: async () =>
+        JSON.stringify({ answer: "Use Postgres", confidence: 0.92, grounding: "BRIEF + rule" }),
+    };
+    const result = await poAnswerLLM("What database?", brief, policy, model);
+    expect(result.answer).toBe("Use Postgres");
+    expect(result.confident).toBe(true);
+    expect(result.grounding).toBe("BRIEF + rule");
+  });
+
+  it("returns confident=false but keeps the best-effort answer below threshold", async () => {
+    const model = {
+      ask: async () =>
+        JSON.stringify({ answer: "Guessing weekly", confidence: 0.4, grounding: "weak" }),
+    };
+    const result = await poAnswerLLM("What backup cadence?", brief, policy, model);
+    expect(result.answer).toBe("Guessing weekly");
+    expect(result.confident).toBe(false);
+  });
+
+  it("falls back to the rule-based matcher when the model output is unparseable", async () => {
+    const model = { ask: async () => "not json at all" };
+    const result = await poAnswerLLM("What database should we use?", brief, policy, model);
+    expect(result.answer).toBe("Postgres");
+    expect(result.confident).toBe(true);
+    expect(result.grounding).toBe("BRIEF.decisions.database");
+  });
+
+  it("falls back to the rule-based matcher when the model call throws", async () => {
+    const model = {
+      ask: async () => {
+        throw new Error("model unavailable");
+      },
+    };
+    const result = await poAnswerLLM("What database should we use?", brief, policy, model);
+    expect(result.answer).toBe("Postgres");
+    expect(result.confident).toBe(true);
   });
 });
