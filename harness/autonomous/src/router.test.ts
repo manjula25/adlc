@@ -11,7 +11,7 @@ describe("buildRunner", () => {
       runners: {
         codex: {
           kind: "codex",
-          model: "gpt-5.5",
+          model: "gpt-4.1",
           reasoningEffort: "low",
           timeoutMs: 300_000,
         },
@@ -19,7 +19,7 @@ describe("buildRunner", () => {
     });
 
     expect((runner as unknown as { options: unknown }).options).toEqual({
-      model: "gpt-5.5",
+      model: "gpt-4.1",
       reasoningEffort: "low",
       timeoutMs: 300_000,
     });
@@ -32,14 +32,14 @@ describe("buildRunner", () => {
       runners: {
         opencode: {
           kind: "opencode",
-          model: "openai/gpt-5.5",
+          model: "openai/gpt-4.1",
           timeoutMs: 300_000,
         },
       },
     });
 
     expect((runner as unknown as { options: unknown }).options).toEqual({
-      model: "openai/gpt-5.5",
+      model: "openai/gpt-4.1",
       timeoutMs: 300_000,
     });
   });
@@ -51,7 +51,7 @@ describe("buildRunner", () => {
       priority: ["claude"],
       runners: {
         claude: { kind: "claude" },
-        codex: { kind: "codex", model: "gpt-5.5" },
+        codex: { kind: "codex", model: "gpt-4.1" },
       },
     };
 

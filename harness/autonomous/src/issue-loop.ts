@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -46,6 +48,20 @@ function clearIssues(cwd: string): void {
   rmSync(issuesFile(cwd), { force: true });
 }
 
+// The to-issues skill writes its output to docs/ISSUES.md. When the runner's last-message
+// text doesn't contain parseable issue headings (e.g. codex confirmed an existing file
+// rather than re-emitting the issues), read the file from disk and parse that instead.
+// Returns null if the file doesn't exist or can't be read.
+function readIssuesFromDisk(cwd: string): string | null {
+  const path = join(cwd, "docs", "ISSUES.md");
+  if (!existsSync(path)) return null;
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 // Parse the issues (tracer-bullet vertical slices) emitted by the to-issues phase into a list
 // of issue blocks. to-issues writes each slice under a "## What to build" heading; we also
 // accept "## Issue"/"## Slice" headings and a top-level numbered list as fallbacks. Returns the
@@ -84,6 +100,12 @@ export function parseIssues(text: string): string[] {
   return items.filter((b) => b.length > 0);
 }
 
+// Stable 8-char content hash of the issue text. Used as the checkpoint key suffix so
+// that reordering issues between --resume runs doesn't skip or duplicate the wrong cycle.
+function issueContentHash(issue: string): string {
+  return createHash("sha256").update(issue.trim()).digest("hex").slice(0, 8);
+}
+
 // Build the per-issue cycle task: the overall build task plus this specific slice.
 function issueTask(baseTask: string, issue: string, index: number, total: number): string {
   return [
@@ -113,6 +135,12 @@ export async function runIssuePipeline(
   if (!resume) {
     clearCheckpoint(ctx.cwd);
     clearIssues(ctx.cwd);
+    // Pre-delete stale planning artifacts so requireMutation correctly detects fresh writes.
+    // These files may already exist from a prior run with identical or near-identical content.
+    // If codex rewrites them with the same content, git sees no diff → requireMutation fails.
+    // Deleting first guarantees git will show the file as new/modified regardless of content.
+    rmSync(join(ctx.cwd, "docs", "PRD.md"), { force: true });
+    rmSync(join(ctx.cwd, "docs", "ISSUES.md"), { force: true });
   }
 
   // 1) Planning once: PRD → ISSUES.
@@ -131,6 +159,20 @@ export async function runIssuePipeline(
   //    are empty do we run a single whole-build cycle — never skip implementation entirely.
   const issuesTrace = planning.phases.find((p) => p.phase === "ISSUES");
   let issues = parseIssues(issuesTrace?.text ?? "");
+  if (issues.length === 0) {
+    // The runner may have written docs/ISSUES.md without re-emitting the issue headings in
+    // its last message (e.g. codex outputs a summary rather than the full block list).
+    // On resume the ISSUES phase is skipped entirely (no trace text).
+    // On fresh runs, requireMutation + pre-delete of docs/ISSUES.md ensures the disk file
+    // was written by codex during THIS run — reading it here is safe.
+    const diskText = readIssuesFromDisk(ctx.cwd);
+    if (diskText) {
+      issues = parseIssues(diskText);
+      if (issues.length > 0) {
+        console.log(`[issue-loop] parsed ${issues.length} issue(s) from docs/ISSUES.md on disk`);
+      }
+    }
+  }
   if (issues.length === 0) {
     const persisted = loadPersistedIssues(ctx.cwd);
     if (persisted && persisted.length > 0) {
@@ -155,13 +197,26 @@ export async function runIssuePipeline(
       ...ctx,
       phases: CYCLE_PHASES,
       task: issueTask(ctx.task, issues[i], index, issues.length),
-      issueKey: `#${index}`,
+      issueKey: issueContentHash(issues[i]),
       manageCheckpoint: false,
     });
     for (const t of cycle.phases) traces.push({ ...t, issue: index });
     if (!cycle.ok) {
       console.error(`[issue-loop] issue ${index}/${issues.length} cycle FAILED — halting; tail withheld.`);
       return { phases: traces, ok: false };
+    }
+
+    // Push commits to remote after each issue cycle passes so the remote stays in sync
+    // and the PR can be opened against real commits. Best-effort: a push failure logs but
+    // does not kill the pipeline (the orchestrator's final push is the authoritative one).
+    try {
+      execSync("git push --set-upstream origin HEAD", {
+        cwd: ctx.cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      console.log(`[issue-loop] issue ${index}/${issues.length} pushed to remote`);
+    } catch (e) {
+      console.warn(`[issue-loop] push after issue ${index} failed (non-fatal): ${e}`);
     }
   }
 

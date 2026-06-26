@@ -21,10 +21,13 @@ export function loadCheckpoint(repoDir: string): Checkpoint | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Checkpoint;
-    if (!Array.isArray(parsed.completed)) return null;
+    if (!Array.isArray(parsed.completed)) {
+      console.warn(`[checkpoint] ${path} is malformed (missing 'completed' array) — discarding, resuming from scratch. All prior phase progress is lost.`);
+      return null;
+    }
     return parsed;
   } catch {
-    // ponytail: a corrupt checkpoint is worthless — treat as no checkpoint, run fresh.
+    console.warn(`[checkpoint] ${path} could not be parsed — discarding, resuming from scratch. All prior phase progress is lost.`);
     return null;
   }
 }

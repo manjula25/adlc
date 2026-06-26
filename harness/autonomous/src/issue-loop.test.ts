@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -89,8 +89,13 @@ describe("runIssuePipeline", () => {
     expect(finishTraces.map((t) => t.issue)).toEqual([1, 2]);
 
     // sub-runs are checkpoint-keyed per issue and let the loop own the checkpoint.
+    // Keys are content-based 8-char hex hashes (not index-based) so reordering issues
+    // between --resume runs doesn't skip the wrong cycles.
     const cycleCalls = runLifecycle.mock.calls.filter((c) => !(c[0].phases ?? []).some((p) => p.name === "ISSUES"));
-    expect(cycleCalls.map((c) => c[0].issueKey)).toEqual(["#1", "#2"]);
+    const keys = cycleCalls.map((c) => c[0].issueKey as string);
+    expect(keys).toHaveLength(2);
+    expect(keys.every((k) => /^[0-9a-f]{8}$/.test(k))).toBe(true);
+    expect(new Set(keys).size).toBe(2); // each issue gets a distinct key
     expect(cycleCalls.every((c) => c[0].manageCheckpoint === false)).toBe(true);
   });
 
@@ -126,6 +131,49 @@ describe("runIssuePipeline", () => {
     const res = await runIssuePipeline(tmpCtx(), { runLifecycle });
     expect(res.ok).toBe(true);
     expect(runLifecycle).toHaveBeenCalledTimes(2); // planning + 1 fallback cycle
+  });
+
+  it("parses issues from docs/ISSUES.md on disk when trace text has none (scope-creep fix)", async () => {
+    const ctx = tmpCtx();
+    // Simulate codex writing docs/ISSUES.md (satisfying requireMutation) but its trace text
+    // is a summary rather than the full issue blocks — parseIssues on the trace returns [].
+    // The runner mock writes the file to disk (as requireMutation demands), so the disk
+    // fallback should pick up the 3 parsed issues.
+    const traceText = "The issues are already defined in docs/ISSUES.md with 6 tracer-bullet slices.";
+    const diskIssues = [
+      "# ISSUES — Test",
+      "",
+      "## ISSUE-1 — Auth gate",
+      "- **What to build:** Auth skeleton.",
+      "## ISSUE-2 — Create a note",
+      "- **What to build:** Create flow.",
+      "## ISSUE-3 — Read a note",
+      "- **What to build:** Read flow.",
+    ].join("\n");
+
+    const runLifecycle = vi.fn(async (c: LifecycleContext) => {
+      const names = (c.phases ?? []).map((p) => p.name);
+      if (names.includes("ISSUES")) {
+        // Simulate codex writing docs/ISSUES.md (requireMutation passes) but not re-emitting
+        // the content in the trace text (summary only).
+        mkdirSync(join(ctx.cwd, "docs"), { recursive: true });
+        writeFileSync(join(ctx.cwd, "docs", "ISSUES.md"), diskIssues);
+        return result(PLANNING_PHASES, true, traceText);
+      }
+      return result(CYCLE_PHASES, true);
+    });
+
+    const res = await runIssuePipeline(ctx, { runLifecycle });
+    expect(res.ok).toBe(true);
+    // 1 planning + 3 issue cycles (parsed from disk), NOT 1 fallback whole-build cycle.
+    expect(runLifecycle).toHaveBeenCalledTimes(4);
+    const cycleCalls = runLifecycle.mock.calls.filter(
+      (c) => !(c[0].phases ?? []).some((p) => p.name === "ISSUES"),
+    );
+    const keys = cycleCalls.map((c) => c[0].issueKey as string);
+    expect(keys).toHaveLength(3);
+    expect(keys.every((k) => /^[0-9a-f]{8}$/.test(k))).toBe(true);
+    expect(new Set(keys).size).toBe(3); // each issue gets a distinct key
   });
 
   it("on resume, reloads persisted issues when ISSUES is skipped (no collapse to one cycle)", async () => {

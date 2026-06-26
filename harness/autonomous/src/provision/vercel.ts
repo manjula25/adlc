@@ -1,5 +1,11 @@
 import { execSync } from "node:child_process";
 
+function gitIdentityFlags(): string {
+  const email = process.env.ADLC_GIT_EMAIL ?? "adlc@bitcot.com";
+  const name = process.env.ADLC_GIT_NAME ?? "ADLC";
+  return `-c user.email=${email} -c user.name="${name}"`;
+}
+
 export interface VercelProvisionArgs {
   repoDir: string;
   projectName: string;
@@ -97,7 +103,7 @@ export function buildWhoamiCommand(token: string): string {
 export function buildBranchTriggerCommands(repoDir: string, branch: string): string[] {
   const git = `git -C "${repoDir}"`;
   return [
-    `${git} -c user.email=adlc@bitcot.com -c user.name=ADLC commit -q --allow-empty -m "ADLC: trigger Vercel build"`,
+    `${git} ${gitIdentityFlags()} commit -q --allow-empty -m "ADLC: trigger Vercel build"`,
     `${git} push origin HEAD:${branch}`,
   ];
 }
@@ -107,7 +113,14 @@ export function buildBranchTriggerCommands(repoDir: string, branch: string): str
 // Vercel substitutes a hashed alias and this URL 404s — upgrade path: poll the Vercel API for
 // the branch deployment's real alias.
 export function buildBranchAliasUrl(projectName: string, branch: string, scope: string): string {
-  return `https://${projectName}-git-${sanitizeBranchSlug(branch)}-${scope.trim()}.vercel.app`;
+  const label = `${projectName}-git-${sanitizeBranchSlug(branch)}-${scope.trim()}`;
+  if (label.length > 63) {
+    console.warn(
+      `[vercel] branch alias label "${label}" is ${label.length} chars (DNS limit: 63). ` +
+        `Vercel will hash it — the constructed URL may 404. Poll the Vercel API for the real alias.`,
+    );
+  }
+  return `https://${label}.vercel.app`;
 }
 
 export async function provisionVercel(args: VercelProvisionArgs): Promise<VercelProvisionResult> {

@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -55,9 +55,9 @@ describe("PHASES", () => {
     ]);
   });
 
-  it("pins planning phases to claude", () => {
+  it("pins planning phases to codex (temporary token-saving swap)", () => {
     const planning = PHASES.filter((p) => ["INTAKE", "GRILL", "PRD", "ISSUES"].includes(p.name));
-    expect(planning.every((p) => p.runner === "claude")).toBe(true);
+    expect(planning.every((p) => p.runner === "codex")).toBe(true);
   });
 
   it("pins execution phases to codex", () => {
@@ -87,9 +87,13 @@ describe("runLifecycle", () => {
     ]);
 
     const calls = mockedRun.mock.calls;
-    expect(calls[0][0]).toBe("claude");  // INTAKE
-    expect(calls[4][0]).toBe("codex");   // IMPLEMENT
-    expect(calls[8][0]).toBe("codex");   // FINISH
+    // Temporary token-saving swap: all phases run on codex.
+    expect(calls[0][0]).toBe("codex");  // INTAKE
+    expect(calls[1][0]).toBe("codex");  // GRILL
+    expect(calls[2][0]).toBe("codex");  // PRD
+    expect(calls[3][0]).toBe("codex");  // ISSUES
+    expect(calls[4][0]).toBe("codex");  // IMPLEMENT
+    expect(calls[8][0]).toBe("codex");  // FINISH
   });
 
   it("on resume, skips checkpointed phases and only runs the rest", async () => {
@@ -150,6 +154,105 @@ describe("runLifecycle", () => {
     expect(existsSync(join(cwd, "ASSUMPTIONS.md"))).toBe(true);
   });
 
+  it("runs the configured remediation skill between REVIEW gate retries so the gate can self-heal", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "adlc-lifecycle-remediate-"));
+    const { runWithRunner } = await import("./router.js");
+    const mockedRun = vi.mocked(runWithRunner);
+
+    let reviewCount = 0;
+    mockedRun.mockImplementation(async (runnerName, _task, skill) => {
+      if (skill === "review") {
+        reviewCount++;
+        if (reviewCount === 1) {
+          return {
+            ranOn: runnerName,
+            elicited: 0,
+            answered: 0,
+            assumptions: [],
+            text: "REQUEST CHANGES: add missing edge-case test",
+            ok: true,
+          };
+        }
+        return okResult(runnerName);
+      }
+      if (skill === "receiving-code-review") {
+        return { ranOn: runnerName, elicited: 0, answered: 0, assumptions: [], text: "Fixed", ok: true };
+      }
+      return okResult(runnerName);
+    });
+
+    const { runLifecycle } = await import("./lifecycle.js");
+    const reviewPhase = PHASES.find((p) => p.name === "REVIEW")!;
+    const result = await runLifecycle({
+      config: stubConfig,
+      brief,
+      cwd,
+      task: "build it",
+      retryCap: 1,
+      phases: [reviewPhase],
+    });
+
+    const reviewCalls = mockedRun.mock.calls.filter((c) => c[2] === "review");
+    const remediationCalls = mockedRun.mock.calls.filter((c) => c[2] === "receiving-code-review");
+
+    expect(reviewCalls).toHaveLength(2);
+    expect(remediationCalls).toHaveLength(1);
+    expect(remediationCalls[0][0]).toBe("codex"); // runner
+    expect(remediationCalls[0][8]).toBe(true); // allowEdits enabled so it can fix
+    expect(remediationCalls[0][1]).toContain("build it"); // original task preserved
+    expect(remediationCalls[0][1]).toContain("=== REVIEW FINDINGS ===");
+    expect(remediationCalls[0][1]).toContain("REQUEST CHANGES: add missing edge-case test");
+    expect(remediationCalls[0][6]).toBe("REVIEW:REMEDIATE");
+
+    const review = result.phases.find((p) => p.phase === "REVIEW")!;
+    expect(review.ok).toBe(true);
+    expect(review.gatePassed).toBe(true);
+    expect(review.retriesUsed).toBe(1);
+  });
+
+  it("remediation is invoked on each failed REVIEW attempt but not after the final retry", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "adlc-lifecycle-remediate-cap-"));
+    const { runWithRunner } = await import("./router.js");
+    const mockedRun = vi.mocked(runWithRunner);
+
+    mockedRun.mockImplementation(async (runnerName, _task, skill) => {
+      if (skill === "review") {
+        return {
+          ranOn: runnerName,
+          elicited: 0,
+          answered: 0,
+          assumptions: [],
+          text: "REQUEST CHANGES: unresolved",
+          ok: true,
+        };
+      }
+      if (skill === "receiving-code-review") {
+        return { ranOn: runnerName, elicited: 0, answered: 0, assumptions: [], text: "Tried", ok: true };
+      }
+      return okResult(runnerName);
+    });
+
+    const { runLifecycle } = await import("./lifecycle.js");
+    const reviewPhase = PHASES.find((p) => p.name === "REVIEW")!;
+    const result = await runLifecycle({
+      config: stubConfig,
+      brief,
+      cwd,
+      task: "build it",
+      retryCap: 2,
+      phases: [reviewPhase],
+    });
+
+    const reviewCalls = mockedRun.mock.calls.filter((c) => c[2] === "review");
+    const remediationCalls = mockedRun.mock.calls.filter((c) => c[2] === "receiving-code-review");
+
+    // retryCap=2 means 3 phase attempts (0,1,2) and 2 remediation windows (after 0 and 1).
+    expect(reviewCalls).toHaveLength(3);
+    expect(remediationCalls).toHaveLength(2);
+    expect(result.phases[0]!.ok).toBe(false);
+    expect(result.phases[0]!.gatePassed).toBe(false);
+  });
+
   it("empty-diff guard: fails IMPLEMENT when the runner writes nothing in a git repo", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "adlc-lifecycle-nodiff-"));
     execSync("git init -q && git commit -q --allow-empty -m init", { cwd });
@@ -160,8 +263,10 @@ describe("runLifecycle", () => {
     // must catch IMPLEMENT (requireMutation) even though its gate text would otherwise pass.
     mockedRun.mockImplementation(async (runnerName) => okResult(runnerName));
 
-    const { runLifecycle } = await import("./lifecycle.js");
-    const result = await runLifecycle({ config: stubConfig, brief, cwd, task: "build it", retryCap: 0 });
+    // Use CYCLE_PHASES directly so we start at IMPLEMENT — planning phases now also have
+    // requireMutation and would fail first if included here.
+    const { runLifecycle, CYCLE_PHASES } = await import("./lifecycle.js");
+    const result = await runLifecycle({ config: stubConfig, brief, cwd, task: "build it", retryCap: 0, phases: CYCLE_PHASES });
 
     const impl = result.phases.find((p) => p.phase === "IMPLEMENT")!;
     expect(impl.gatePassed).toBe(false);
@@ -178,6 +283,15 @@ describe("runLifecycle", () => {
     const { runWithRunner } = await import("./router.js");
     const mockedRun = vi.mocked(runWithRunner);
     mockedRun.mockImplementation(async (runnerName, _task, skill) => {
+      // Planning phases now require mutation — simulate them writing their output files.
+      if (skill === "to-prd") {
+        mkdirSync(join(cwd, "docs"), { recursive: true });
+        writeFileSync(join(cwd, "docs", "PRD.md"), "# PRD\n");
+      }
+      if (skill === "to-issues") {
+        mkdirSync(join(cwd, "docs"), { recursive: true });
+        writeFileSync(join(cwd, "docs", "ISSUES.md"), "# Issues\n## ISSUE-1 — auth\nWhat to build: auth.\n");
+      }
       // Simulate codex writing app code during IMPLEMENT so the working tree changes.
       if (skill === "implement") writeFileSync(join(cwd, "app.ts"), "export const x = 1;\n");
       return okResult(runnerName);
@@ -235,6 +349,15 @@ describe("gate verdict parsers", () => {
     expect(reviewGate(r("REQUEST CHANGES: blocker at x.ts:10"))).toBe(false);
     expect(reviewGate(r("APPROVE, but REQUEST CHANGES on tests"))).toBe(false);
     expect(reviewGate(r("looks fine"))).toBe(false); // no explicit approval
+  });
+
+  it("implementGate: PASS verdict passes, FAIL or missing does not", async () => {
+    const { implementGate } = await import("./lifecycle.js");
+    expect(implementGate(r("Implementation verdict: PASS"))).toBe(true);
+    expect(implementGate(r("Implementation verdict: FAIL — @nestjs/testing missing"))).toBe(false);
+    expect(implementGate(r("PASS but also FAIL noted"))).toBe(false); // fail-closed on tie
+    expect(implementGate(r("PASS", false))).toBe(false); // runner failed
+    expect(implementGate(r("wrote some files"))).toBe(false); // no verdict
   });
 
   it("verifyGate + finishGate: PASS verdict passes, FAIL or missing does not", async () => {

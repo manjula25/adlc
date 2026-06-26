@@ -67,9 +67,24 @@ function extractProject(md: string): string {
 }
 
 export function parseBrief(md: string): Brief {
+  const decisions = parseKeyValueBullets(sectionBody(md, "Decisions"));
+  // Validate and auto-correct malformed email in the "recipient" decision.
+  // Past failure: BRIEF had `dev@@bitcot.com` (double @) which propagated
+  // through the entire pipeline unchecked. Catch it at the source.
+  if (decisions.recipient) {
+    const trimmed = decisions.recipient.trim();
+    // Collapse consecutive @ into a single @ (dev@@bitcot.com → dev@bitcot.com)
+    const corrected = trimmed.replace(/@{2,}/g, "@");
+    if (corrected !== trimmed) {
+      console.warn(
+        `[config] BRIEF recipient "${trimmed}" contains a doubled @ — auto-corrected to "${corrected}"`,
+      );
+      decisions.recipient = corrected;
+    }
+  }
   return {
     project: extractProject(md),
-    decisions: parseKeyValueBullets(sectionBody(md, "Decisions")),
+    decisions,
   };
 }
 

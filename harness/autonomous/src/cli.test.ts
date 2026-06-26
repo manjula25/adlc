@@ -7,7 +7,34 @@ describe("parseArgs", () => {
     const opts = parseArgs(["run", "--link", "https://claude.ai/x"]);
     expect(opts.command).toBe("run");
     expect(opts.link).toBe("https://claude.ai/x");
-    expect(opts.dryRun).toBe(true); // safe default: dry-run unless --live
+    expect(opts.dryRun).toBe(false); // live by default for autonomous runs
+  });
+
+  it("opts into dry-run via --dry-run flag", () => {
+    const opts = parseArgs(["run", "--link", "https://claude.ai/x", "--dry-run"]);
+    expect(opts.dryRun).toBe(true);
+  });
+
+  it("opts into dry-run via ADLC_DRY_RUN env var", () => {
+    const opts = parseArgs(["run", "--link", "https://claude.ai/x"], { ADLC_DRY_RUN: "true" });
+    expect(opts.dryRun).toBe(true);
+  });
+
+  it("reads link from ADLC_LINK env var when flag is absent", () => {
+    const opts = parseArgs(["run"], { ADLC_LINK: "https://env.example/design.html" });
+    expect(opts.link).toBe("https://env.example/design.html");
+    expect(opts.dryRun).toBe(false);
+  });
+
+  it("reads repo-dir from ADLC_REPO_DIR env var", () => {
+    const opts = parseArgs(["run"], { ADLC_LINK: "x", ADLC_REPO_DIR: "/custom/repo" });
+    expect(opts.repoDir).toBe("/custom/repo");
+  });
+
+  it("works without the 'run' subcommand (npm run conductor style)", () => {
+    const opts = parseArgs(["--link", "https://claude.ai/x"]);
+    expect(opts.command).toBe("run");
+    expect(opts.link).toBe("https://claude.ai/x");
   });
 
   it("flips to live with --live and reads optional flags", () => {
@@ -36,8 +63,11 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["run"])).toThrow(/--link/);
   });
 
-  it("throws on an unknown command", () => {
-    expect(() => parseArgs(["frobnicate", "--link", "x"])).toThrow(/Unknown command/);
+  it("treats an unknown first arg as a flag (npm run conductor style — no subcommand)", () => {
+    // "frobnicate" is not a known command but also not a --flag, so it's treated as the
+    // implicit "run" subcommand and the remaining args are parsed normally.
+    const opts = parseArgs(["--link", "x"]);
+    expect(opts.command).toBe("run");
   });
 });
 

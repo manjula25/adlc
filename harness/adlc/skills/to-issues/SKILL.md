@@ -37,5 +37,31 @@ yourself, decide, and log — never pause.
 - **Acceptance criteria** — a testable checklist.
 - **Blocked by** — blocking slices, or "None — can start immediately".
 
+## Output (mandatory — disk write required)
+**You MUST write the issues to `docs/ISSUES.md`** before returning. This file write is the gate.
+Describing your plan and returning WITHOUT writing the file is a FAIL — the phase will retry.
+
+```bash
+mkdir -p docs
+cat > docs/ISSUES.md << 'EOF'
+# Issues
+
+## ISSUE-1 — <title>
+…
+EOF
+```
+
+Use the exact `## ISSUE-N —` heading format so the conductor can parse each slice.
+
+## ABSOLUTE RULE — ZERO QUESTIONS
+**You may NEVER ask a question, offer an alternative, or invite further review.**
+Not "Would you like to…?", not "Shall I…?", not "Let me know if…".
+Decide from BRIEF/POLICY, log anything unresolvable to `ASSUMPTIONS.md`, and stop.
+
+## Hard rules for the autonomous loop
+- **Write `docs/ISSUES.md` to disk.** Narrating what you will do without writing the file is a FAIL.
+- **Use the exact heading format** `## ISSUE-N — <title>` — the issue parser matches on this.
+- **End your response after writing the file.** Do not ask questions or offer next steps.
+
 ## Hand off
 The ordered issues feed `implement`, which drives each slice to green test-first.

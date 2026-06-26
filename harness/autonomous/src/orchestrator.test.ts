@@ -25,7 +25,7 @@ function makeStubDeps(order: string[]): RunProjectDeps {
   return {
     intake: async () => {
       order.push("intake");
-      return { source: "file", raw: "<h1>App</h1>", normalized: "App design" };
+      return { source: "file", raw: "<h1>App</h1>", normalized: "App design", isSpa: false };
     },
     runGrill: async (args) => {
       order.push("grill");

@@ -1,11 +1,52 @@
 #!/usr/bin/env -S node --import tsx
-import { readFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadProjectConfig } from "./config.js";
 import { runProject } from "./orchestrator.js";
 import { plannedChecks, preflight } from "./preflight.js";
 import type { RunnerConfig } from "./router.js";
+
+/**
+ * Tee all stdout/stderr output to a timestamped log file so the full conductor
+ * run is preserved for debugging. Returns a flush function to call at the end.
+ *
+ * Wraps process.stdout.write / process.stderr.write so it captures everything:
+ * console.log, console.error, and direct process.stderr.write calls from runners.
+ */
+function setupFileLogging(repoDir: string): { flush: () => void; logPath: string } {
+  const logsDir = join(repoDir, "logs");
+  mkdirSync(logsDir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const logPath = join(logsDir, `conductor-${ts}.log`);
+  const stream = createWriteStream(logPath, { flags: "a" });
+
+  stream.write(`=== Conductor run started at ${new Date().toISOString()} ===\n`);
+
+  const origStdoutWrite = process.stdout.write.bind(process.stdout);
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+
+  process.stdout.write = ((data: unknown, ...rest: unknown[]) => {
+    stream.write(typeof data === "string" ? data : String(data));
+    return origStdoutWrite(data as string, ...rest as []);
+  }) as typeof process.stdout.write;
+
+  process.stderr.write = ((data: unknown, ...rest: unknown[]) => {
+    stream.write(typeof data === "string" ? data : String(data));
+    return origStderrWrite(data as string, ...rest as []);
+  }) as typeof process.stderr.write;
+
+  return {
+    logPath,
+    flush: () => {
+      stream.write(`\n=== Conductor run ended at ${new Date().toISOString()} ===\n`);
+      stream.end();
+      process.stdout.write = origStdoutWrite;
+      process.stderr.write = origStderrWrite;
+    },
+  };
+}
 
 export interface CliOptions {
   command: string;
@@ -20,19 +61,40 @@ export interface CliOptions {
 
 const KNOWN_COMMANDS = new Set(["run"]);
 
-export function parseArgs(argv: string[]): CliOptions {
-  const [command, ...rest] = argv;
-  if (!command || !KNOWN_COMMANDS.has(command)) {
-    throw new Error(`Unknown command: ${command ?? "(none)"}. Expected: conductor run --link <url>`);
+// Env-var fallbacks so `npm run conductor` works with no flags.
+// Set these in your shell profile or a .env loaded before the script:
+//   ADLC_LINK     — design file path or URL (required unless --link is passed)
+//   ADLC_REPO_DIR — target repo directory (default: cwd)
+//   ADLC_DRY_RUN  — set to "true" to skip real cloud calls (default: false — live)
+//   ADLC_RESUME   — set to "true" to resume from the last checkpoint
+//   ADLC_ORG      — GitHub org/user (default: "adlc")
+//   ADLC_PROJECT  — stable project ID (default: auto-generated)
+//   ADLC_BRANCH   — feature branch name (default: feat/<projectId>)
+export function parseArgs(
+  argv: string[],
+  env: Record<string, string | undefined> = process.env,
+): CliOptions {
+  // "run" is the only command. When invoked as `npm run conductor` the subcommand
+  // is omitted from argv — treat a missing/unknown first arg as "run" so the script
+  // works with no arguments, driven purely by env vars.
+  let args = argv;
+  if (!argv[0] || !KNOWN_COMMANDS.has(argv[0])) {
+    args = ["run", ...argv];
   }
+  const [command, ...rest] = args;
 
   const flags: Record<string, string> = {};
-  let live = false;
+  let explicitLive = false;
+  let explicitDryRun = false;
   let resume = false;
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     if (arg === "--live") {
-      live = true;
+      explicitLive = true;
+      continue;
+    }
+    if (arg === "--dry-run") {
+      explicitDryRun = true;
       continue;
     }
     if (arg === "--resume") {
@@ -50,20 +112,27 @@ export function parseArgs(argv: string[]): CliOptions {
     }
   }
 
-  if (!flags.link) {
-    throw new Error("Missing required flag: --link <url|path>");
+  // Resolve link: flag beats env var.
+  const link = flags.link ?? env.ADLC_LINK ?? "";
+  if (!link) {
+    throw new Error(
+      "Missing required flag: --link <url|path>  (or set ADLC_LINK env var)",
+    );
   }
 
-  const projectId = flags.project ?? `proj_${Date.now().toString(36)}`;
+  // Dry-run: explicit --dry-run flag > ADLC_DRY_RUN env var > default false (live).
+  const dryRun = explicitDryRun || (!explicitLive && env.ADLC_DRY_RUN === "true");
+
+  const projectId = flags.project ?? env.ADLC_PROJECT ?? `proj_${Date.now().toString(36)}`;
   return {
     command,
-    link: flags.link,
-    dryRun: !live,
-    org: flags.org ?? "adlc",
+    link,
+    dryRun,
+    org: flags.org ?? env.ADLC_ORG ?? "adlc",
     projectId,
-    branch: flags.branch ?? `feat/${projectId}`,
-    repoDir: flags["repo-dir"] ?? process.cwd(),
-    resume,
+    branch: flags.branch ?? env.ADLC_BRANCH ?? `feat/${projectId}`,
+    repoDir: flags["repo-dir"] ?? env.ADLC_REPO_DIR ?? process.cwd(),
+    resume: resume || env.ADLC_RESUME === "true",
   };
 }
 
@@ -123,7 +192,7 @@ export async function main(
   argv: string[],
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
-  const opts = parseArgs(argv);
+  const opts = parseArgs(argv, env);
   const resolved = resolveEnv(env, !opts.dryRun);
   const runnerConfig = loadRunnerConfig();
   const { brief, policy } = loadProjectConfig(opts.repoDir);
@@ -132,36 +201,43 @@ export async function main(
   // present and authed before the first phase, so failure is at second 0, not mid-flight.
   preflight(plannedChecks(runnerConfig, !opts.dryRun));
 
-  console.log(`[conductor] run project=${opts.projectId} dryRun=${opts.dryRun} resume=${opts.resume}`);
-  console.log(`[conductor] link=${opts.link}`);
+  const { flush: flushLog, logPath } = setupFileLogging(opts.repoDir);
 
-  const result = await runProject({
-    link: opts.link,
-    cwd: opts.repoDir,
-    config: runnerConfig,
-    brief,
-    policy,
-    org: opts.org,
-    projectId: opts.projectId,
-    branch: opts.branch,
-    vercelToken: resolved.vercelToken,
-    supabaseDbUrl: resolved.supabaseDbUrl,
-    supabaseEnv: { url: resolved.supabaseUrl, anonKey: resolved.supabaseAnonKey },
-    notifyApiKey: resolved.notifyApiKey,
-    dryRun: opts.dryRun,
-    resume: opts.resume,
-  });
+  try {
+    console.log(`[conductor] run project=${opts.projectId} dryRun=${opts.dryRun} resume=${opts.resume}`);
+    console.log(`[conductor] link=${opts.link}`);
+    console.log(`[conductor] log file: ${logPath}`);
 
-  console.log("\n=== RESULT ===");
-  console.log(`ok:         ${result.ok}`);
-  console.log(`previewUrl: ${result.previewUrl}`);
-  console.log(`repoUrl:    ${result.repoUrl}`);
-  console.log(`prUrl:      ${result.prUrl}`);
-  console.log(`schema:     ${result.schema}`);
-  console.log(`notified:   ${result.notified}`);
-  console.log(`\n=== ASSUMPTIONS ===\n${result.assumptionsSummary}`);
+    const result = await runProject({
+      link: opts.link,
+      cwd: opts.repoDir,
+      config: runnerConfig,
+      brief,
+      policy,
+      org: opts.org,
+      projectId: opts.projectId,
+      branch: opts.branch,
+      vercelToken: resolved.vercelToken,
+      supabaseDbUrl: resolved.supabaseDbUrl,
+      supabaseEnv: { url: resolved.supabaseUrl, anonKey: resolved.supabaseAnonKey },
+      notifyApiKey: resolved.notifyApiKey,
+      dryRun: opts.dryRun,
+      resume: opts.resume,
+    });
 
-  return result.ok ? 0 : 1;
+    console.log("\n=== RESULT ===");
+    console.log(`ok:         ${result.ok}`);
+    console.log(`previewUrl: ${result.previewUrl}`);
+    console.log(`repoUrl:    ${result.repoUrl}`);
+    console.log(`prUrl:      ${result.prUrl}`);
+    console.log(`schema:     ${result.schema}`);
+    console.log(`notified:   ${result.notified}`);
+    console.log(`\n=== ASSUMPTIONS ===\n${result.assumptionsSummary}`);
+
+    return result.ok ? 0 : 1;
+  } finally {
+    flushLog();
+  }
 }
 
 // Run only when invoked directly (not when imported by tests).

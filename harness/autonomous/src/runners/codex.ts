@@ -36,7 +36,7 @@ export class CodexRunner implements Runner {
   constructor(private readonly options: CodexRunnerOptions = {}) {}
 
   async runHeadless(prompt: string, opts: RunOpts): Promise<RunResult> {
-    const model = this.options.model ?? "gpt-5.5";
+    const model = this.options.model ?? "gpt-4.1";
     const timeoutMs = this.options.timeoutMs ?? 300_000;
     const index = codexRunIndex;
     codexRunIndex += 1;

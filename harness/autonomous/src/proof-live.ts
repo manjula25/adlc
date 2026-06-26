@@ -25,6 +25,12 @@ import { provisionSupabase } from "./provision/supabase.js";
 import { provisionVercel } from "./provision/vercel.js";
 import { sendNotification } from "./notify.js";
 
+// Backfill the canonical names from the Next.js `NEXT_PUBLIC_*` names a real .env.local uses,
+// so sourcing .env.local needs no manual aliasing (mirrors cli.ts resolveEnv fallbacks).
+process.env["SUPABASE_URL"] ??= process.env["NEXT_PUBLIC_SUPABASE_URL"];
+process.env["SUPABASE_ANON_KEY"] ??=
+  process.env["NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"] ?? process.env["NEXT_PUBLIC_SUPABASE_ANON_KEY"];
+
 const REQUIRED = ["VERCEL_TOKEN", "SUPABASE_DB_URL", "SUPABASE_URL", "SUPABASE_ANON_KEY"]
   .filter((k) => !(process.env["SKIP_SUPABASE"] === "1" && k === "SUPABASE_DB_URL"));
 const missing = REQUIRED.filter((k) => !process.env[k]);

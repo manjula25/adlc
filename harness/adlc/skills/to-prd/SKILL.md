@@ -37,5 +37,26 @@ from BRIEF/POLICY and logged, never asked.
 - **Out of Scope** — what this PRD does not cover.
 - **Further Notes** — anything else, including carried-over `## UNRESOLVED` assumptions.
 
+## Output (mandatory — disk write required)
+**You MUST write the PRD to `docs/PRD.md`** before returning. This file write is the gate.
+Describing your plan and returning WITHOUT writing the file is a FAIL — the phase will retry.
+
+```bash
+mkdir -p docs
+cat > docs/PRD.md << 'EOF'
+# <Project> — Product Requirements Document
+…
+EOF
+```
+
+## ABSOLUTE RULE — ZERO QUESTIONS
+**You may NEVER ask a question, offer an alternative, or invite further review.**
+Not "Would you like to…?", not "Shall I…?", not "Let me know if…".
+Decide from BRIEF/POLICY, log anything unresolvable to `ASSUMPTIONS.md`, and stop.
+
+## Hard rules for the autonomous loop
+- **Write `docs/PRD.md` to disk.** Narrating what you will do without writing the file is a FAIL.
+- **End your response after writing the file.** Do not ask questions or offer next steps.
+
 ## Hand off
 The PRD feeds `to-issues`, which slices it into independently-grabbable tracer-bullet issues.

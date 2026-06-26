@@ -31,6 +31,17 @@ export interface PhaseConfig {
   // would otherwise sail through every gate and push an empty tree. When set, the
   // phase fails unless `git status` shows the working tree changed during the phase.
   requireMutation?: boolean;
+  // Auto-commit all workspace changes after this phase passes. IMPLEMENT writes files
+  // to disk but doesn't git-commit, so REVIEW diffs HEAD and sees nothing. Setting
+  // this on IMPLEMENT ensures the diff exists before REVIEW runs.
+  autoCommitOnPass?: boolean;
+  // Remediation step run when this phase's gate FAILS, before the next retry. The gate
+  // skill (e.g. `review`) only judges; without this, retrying re-judges unchanged code and
+  // the verdict can never flip. The remediation runner gets the failing report as its task
+  // and runs with edits enabled so it can fix the findings; then the gate re-runs. Only
+  // meaningful on gated, read-only phases (REVIEW) — gated phases that already allowEdits
+  // self-heal on retry.
+  remediate?: { runner: "claude" | "codex"; skill: string };
 }
 
 // A gate verdict is the skill's own machine-readable signal, not the runner's exit code.
@@ -54,6 +65,17 @@ export function reviewGate(r: DoubtRunResult): boolean {
   return t.includes("APPROVE");
 }
 
+// implement emits "Implementation verdict: PASS/FAIL" — same PASS/FAIL shape as the
+// other gates. Without this gate, IMPLEMENT passes as long as files were written
+// (requireMutation), even if the implement skill itself reported FAIL. The failure only
+// surfaces downstream at VERIFY, too late for the IMPLEMENT retry loop to self-heal.
+export function implementGate(r: DoubtRunResult): boolean {
+  if (!r.ok) return false;
+  const t = r.text.toUpperCase();
+  if (/\bFAIL\b/.test(t)) return false;
+  return /\bPASS\b/.test(t);
+}
+
 // verification-before-completion emits "Verification verdict: PASS/FAIL" — same PASS/FAIL
 // shape as qa-run, fail-closed on a tie. Evidence-before-claims: a missing verdict is a FAIL.
 export function verifyGate(r: DoubtRunResult): boolean {
@@ -73,13 +95,14 @@ export function finishGate(r: DoubtRunResult): boolean {
 }
 
 export const PHASES: PhaseConfig[] = [
-  { name: "INTAKE",     runner: "claude", skill: "intake" },
-  { name: "GRILL",      runner: "claude", skill: "grill-with-docs" }, // BA role (= ba-agent subagent in-session)
-  { name: "PRD",        runner: "claude", skill: "to-prd" },          // Matt Pocock to-prd (was create-prd.md)
-  { name: "ISSUES",     runner: "claude", skill: "to-issues" },       // Matt Pocock to-issues (was plan-feature)
+  { name: "INTAKE",     runner: "codex", skill: "intake" },
+  { name: "GRILL",      runner: "codex", skill: "grill-with-docs" }, // BA role (= ba-agent subagent in-session)
+  { name: "PRD",        runner: "codex", skill: "to-prd",    allowEdits: true, requireMutation: true }, // Matt Pocock to-prd (was create-prd.md)
+  { name: "ISSUES",     runner: "codex", skill: "to-issues", allowEdits: true, requireMutation: true }, // Matt Pocock to-issues (was plan-feature)
   // ── per-issue cycle (repeated once per parsed issue from ISSUES) ──────────────
-  { name: "IMPLEMENT",  runner: "codex",  skill: "implement", allowEdits: true, requireMutation: true },
-  { name: "REVIEW",     runner: "codex",  skill: "review",      gate: reviewGate }, // Matt Pocock review (was code-review.md)
+  { name: "IMPLEMENT",  runner: "codex",  skill: "implement", gate: implementGate, allowEdits: true, requireMutation: true, autoCommitOnPass: true },
+  { name: "REVIEW",     runner: "codex",  skill: "review",      gate: reviewGate, allowEdits: true,
+    remediate: { runner: "codex", skill: "receiving-code-review" } }, // Matt Pocock review + receiving-code-review fix loop
   { name: "VERIFY",     runner: "codex",  skill: "verification-before-completion", gate: verifyGate, allowEdits: true },
   { name: "QA",         runner: "codex",  skill: "qa-run",     gate: qaGate, allowEdits: true },
   { name: "FINISH",     runner: "codex",  skill: "finishing-a-development-branch", gate: finishGate, allowEdits: true },
@@ -213,6 +236,29 @@ export async function runLifecycle(ctx: LifecycleContext): Promise<LifecycleResu
 
       retriesUsed = attempt + 1;
 
+      // If this phase has a remediation step, run it before the next retry so the
+      // re-invoked gate skill evaluates changed code rather than re-judging the same
+      // unchanged output. The remediation gets the failing report as its task and
+      // runs with edits enabled so it can actually fix the findings.
+      if (phaseConfig.remediate && attempt < cap) {
+        const findings = lastResult?.text ?? "";
+        console.log(
+          `[lifecycle] ${phaseConfig.name} gate failed — running remediation: ${phaseConfig.remediate.skill}`,
+        );
+        const remediationTask = [ctx.task, "", "=== REVIEW FINDINGS ===", findings].join("\n");
+        await runWithRunner(
+          phaseConfig.remediate.runner,
+          remediationTask,
+          phaseConfig.remediate.skill,
+          ctx.config,
+          ctx.brief,
+          ctx.cwd,
+          `${phaseConfig.name}:REMEDIATE`,
+          ctx.poAnswer,
+          true,
+        );
+      }
+
       if (attempt === cap) {
         // §8: zero-human, so never pause for input — but a failed quality gate is NOT a
         // doubt to assume away. Log it and let it fail the phase (ok=false below), so the
@@ -259,6 +305,13 @@ export async function runLifecycle(ctx: LifecycleContext): Promise<LifecycleResu
       retriesUsed,
     });
 
+    // After IMPLEMENT (or any phase with autoCommitOnPass) passes, commit all workspace
+    // changes so REVIEW diffs HEAD and sees a real diff. FINISH also commits, but it runs
+    // after REVIEW — too late for the review gate to see the implementation diff.
+    if (ok && phaseConfig.autoCommitOnPass) {
+      autoCommit(ctx.cwd, phaseConfig.name);
+    }
+
     // Persist the win immediately so a crash/abort mid-pipeline can resume from here.
     if (ok) recordPhase(ctx.cwd, keyFor(phaseConfig.name));
 
@@ -275,6 +328,24 @@ export async function runLifecycle(ctx: LifecycleContext): Promise<LifecycleResu
   // loop manages the checkpoint, it clears once at the end of the whole pipeline instead.
   if (manage && ok) clearCheckpoint(ctx.cwd);
   return { phases: traces, ok };
+}
+
+// Commit all workspace changes after a phase passes. Best-effort: git failures are logged
+// but never block the pipeline (the orchestrator's push handles recovery).
+function autoCommit(cwd: string, phase: string): void {
+  try {
+    const status = execSync("git status --porcelain -u", {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!status.trim()) return; // nothing to commit
+    execSync("git add -A", { cwd, stdio: "ignore" });
+    execSync(`git commit -q -m "ADLC: ${phase} phase output"`, { cwd, stdio: "ignore" });
+    console.log(`[lifecycle] auto-committed ${phase} phase changes`);
+  } catch (e) {
+    console.warn(`[lifecycle] auto-commit after ${phase} failed (non-fatal): ${e}`);
+  }
 }
 
 // `git status --porcelain` for cwd, or null if cwd isn't a git repo (or git is missing).

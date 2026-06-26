@@ -45,6 +45,93 @@ describe("runGrill", () => {
     expect(result.assumptions).toHaveLength(0);
   });
 
+  it("throws when every iteration returns ok=false (e.g. 429 API error), preventing REQUIREMENTS.md clobber", async () => {
+    const cwd = makeCwd();
+    const fakeRunner: Runner = {
+      name: "fake",
+      runHeadless: async () => ({
+        text: "Request rejected (429) · [1113][Insufficient balance or no resource package. Please recharge.]",
+        ok: false,
+        runner: "fake",
+      }),
+    };
+
+    await expect(
+      runGrill({
+        runner: fakeRunner,
+        skillsDir: cwd,
+        intakeText: "Design: notes app.",
+        brief,
+        cwd,
+        iterCap: 2,
+      }),
+    ).rejects.toThrow(/GRILL failed/);
+
+    // REQUIREMENTS.md must NOT be written with the error string
+    expect(existsSync(join(cwd, "REQUIREMENTS.md"))).toBe(false);
+  });
+
+  it("throws when runner returns ok=true but text is a 429 API error string (content sanity check)", async () => {
+    const cwd = makeCwd();
+    const fakeRunner: Runner = {
+      name: "fake",
+      runHeadless: async () => ({
+        text: "Request rejected (429) · [1113][Insufficient balance or no resource package. Please recharge.]",
+        ok: true,
+        runner: "fake",
+      }),
+    };
+
+    await expect(
+      runGrill({
+        runner: fakeRunner,
+        skillsDir: cwd,
+        intakeText: "Design: notes app.",
+        brief,
+        cwd,
+        iterCap: 2,
+      }),
+    ).rejects.toThrow(/GRILL failed/);
+
+    expect(existsSync(join(cwd, "REQUIREMENTS.md"))).toBe(false);
+  });
+
+  it("recovers when a failed iteration is followed by a successful one", async () => {
+    const cwd = makeCwd();
+    let call = 0;
+    const fakeRunner: Runner = {
+      name: "fake",
+      runHeadless: async () => {
+        call++;
+        if (call === 1) {
+          return {
+            text: "Request rejected (429) · Insufficient balance.",
+            ok: false,
+            runner: "fake",
+          };
+        }
+        return {
+          text: "Requirements gathered: use Postgres for storage.",
+          ok: true,
+          runner: "fake",
+        };
+      },
+    };
+
+    const result = await runGrill({
+      runner: fakeRunner,
+      skillsDir: cwd,
+      intakeText: "Design: task manager with Postgres storage.",
+      brief,
+      cwd,
+      iterCap: 3,
+    });
+
+    expect(existsSync(result.requirementsPath)).toBe(true);
+    expect(readFileSync(result.requirementsPath, "utf8")).toContain("Postgres");
+    expect(result.iterations).toBe(2);
+  });
+
   it("logs an assumption and writes REQUIREMENTS.md when runner always returns UNRESOLVED", async () => {
     const cwd = makeCwd();
     const fakeRunner: Runner = {

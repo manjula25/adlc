@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { Brief } from "./brief.js";
 import type { Policy } from "./config.js";
 import { intake as realIntake } from "./intake.js";
@@ -54,7 +57,7 @@ export interface RunProjectArgs {
   retryCap?: number;
   // Resume from the lifecycle checkpoint: skip phases that passed in a prior run.
   resume?: boolean;
-  // Name of the runner used for planning/grill phases (defaults to claude, else first priority).
+  // Name of the runner used for planning/grill phases (defaults to first in priority order).
   planningRunner?: string;
   // Optional LLM model backing the PO-agent oracle. Without it, the rule-based matcher is used.
   poModel?: PoModel;
@@ -131,21 +134,52 @@ export async function runProject(args: RunProjectArgs): Promise<RunProjectResult
     ? (q, brief) => poAnswerLLM(q, brief, args.policy, args.poModel as PoModel)
     : poAnswerOne;
 
-  const planningRunnerName =
-    args.planningRunner ?? (args.config.runners["claude"] ? "claude" : args.config.priority[0]);
+  const planningRunnerName = args.planningRunner ?? args.config.priority[0];
   const planningRunner = buildRunner(planningRunnerName, args.config);
 
   // 1) INTAKE — normalize the design link.
-  const intakeResult = await deps.intake(args.link);
+  // On resume, skip INTAKE/GRILL if REQUIREMENTS.md already exists — they ran in the
+  // prior attempt and re-running them is wasteful and error-prone (e.g. wrong --link).
+  const requirementsPath = join(args.cwd, "REQUIREMENTS.md");
+  const resumeSkipPlanning = args.resume && existsSync(requirementsPath);
+
+  let intakeText: string;
+  if (resumeSkipPlanning) {
+    console.log("[orchestrator] resume — INTAKE/GRILL skipped (REQUIREMENTS.md already exists)");
+    intakeText = ""; // grillResult below reads from disk; intakeText not needed
+  } else {
+    const intakeResult = await deps.intake(args.link);
+    if (intakeResult.isSpa) {
+      throw new Error(
+        `INTAKE: design file appears to be a bundled SPA — static extraction failed. ` +
+          `Open the file at ${args.link} in a browser or read it directly with the INTAKE skill, ` +
+          `then re-run with the raw design content.`,
+      );
+    }
+    intakeText = intakeResult.normalized;
+  }
 
   // 2) GRILL — requirement self-play → REQUIREMENTS.md.
-  const grillResult = await deps.runGrill({
-    runner: planningRunner,
-    skillsDir: args.config.skillsDir,
-    intakeText: intakeResult.normalized,
-    brief: args.brief,
-    cwd: args.cwd,
-  });
+  // Wrapped in step() so a GRILL failure (e.g. all iterations returned 429) is reported
+  // clearly. runGrill throws when the runner never produces usable output, preventing
+  // an API error string from clobbering REQUIREMENTS.md and starving downstream gates.
+  // On resume, read REQUIREMENTS.md from disk instead of re-grilling.
+  let grillRequirements: string;
+  if (resumeSkipPlanning) {
+    grillRequirements = readFileSync(requirementsPath, "utf8");
+    console.log("[orchestrator] resume — requirements loaded from REQUIREMENTS.md");
+  } else {
+    const grillResult = await step("grill", () =>
+      deps.runGrill({
+        runner: planningRunner,
+        skillsDir: args.config.skillsDir,
+        intakeText,
+        brief: args.brief,
+        cwd: args.cwd,
+      }),
+    );
+    grillRequirements = grillResult.requirements;
+  }
 
   // 3) Runner-driven pipeline: PRD → ISSUES once, then per parsed issue:
   //    implement → review → verify → qa → finishing-a-development-branch.
@@ -153,7 +187,7 @@ export async function runProject(args: RunProjectArgs): Promise<RunProjectResult
     config: args.config,
     brief: args.brief,
     cwd: args.cwd,
-    task: `Build "${args.brief.project}" per the requirements:\n\n${grillResult.requirements}`,
+    task: `Build "${args.brief.project}" per the requirements:\n\n${grillRequirements}`,
     poAnswer,
     retryCap: args.retryCap,
     resume: args.resume,
@@ -172,7 +206,7 @@ export async function runProject(args: RunProjectArgs): Promise<RunProjectResult
       repoUrl: "",
       prUrl: "",
       schema: "",
-      requirementsPath: grillResult.requirementsPath,
+      requirementsPath: requirementsPath,
       phases: lifecycleResult.phases,
       notified: false,
       assumptionsSummary: summarizeAssumptions(args.cwd),
@@ -203,10 +237,10 @@ export async function runProject(args: RunProjectArgs): Promise<RunProjectResult
   );
 
   // RLS is load-bearing security (ADR 0001): a live deploy must not proceed on an
-  // unverified schema. Log it loudly; the assumptions log captures the decision.
+  // unverified schema. Halt rather than deploy — a preview with broken RLS leaks data.
   if (!dryRun && !supabaseResult.rlsVerified) {
-    console.error(
-      `[orchestrator] WARNING: RLS not verified for schema ${supabaseResult.schema} — review before exposing preview.`,
+    throw new Error(
+      `[orchestrator] RLS not verified for schema ${supabaseResult.schema} — deploy withheld. Fix the RLS policy and re-run.`,
     );
   }
 
@@ -273,7 +307,7 @@ export async function runProject(args: RunProjectArgs): Promise<RunProjectResult
     repoUrl: repoResult.url,
     prUrl: prResult.url,
     schema: supabaseResult.schema,
-    requirementsPath: grillResult.requirementsPath,
+    requirementsPath: requirementsPath,
     phases: lifecycleResult.phases,
     notified: notifyResult.sent,
     assumptionsSummary,

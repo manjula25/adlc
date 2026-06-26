@@ -6,6 +6,8 @@ export interface IntakeResult {
   source: "url" | "file";
   raw: string;
   normalized: string;
+  /** True when static extraction yielded too little content (bundled SPA/compiled bundle). */
+  isSpa: boolean;
 }
 
 // Minimum chars to consider extracted text "meaningful" — below this = SPA/bundle.
@@ -61,6 +63,23 @@ function extractSections(html: string): { text: string; sectionCount: number } {
   }
 
   return { text: sections.join("\n\n") || stripHtml(html), sectionCount: matches.length };
+}
+
+// Claude `.dc.html` design-companion files embed the entire design as a
+// JSON-encoded HTML string inside `<script type="__bundler/template">`.
+// The outer page is a JS runner that unpacks it at runtime — static readers
+// only see "Bundled Page … Unpacking…". Extract and return the inner HTML so
+// the section extractor gets real design content instead of the SPA wrapper.
+function extractDcBundleTemplate(html: string): string | null {
+  const match = html.match(/<script type="__bundler\/template">([\s\S]*?)<\/script>/);
+  if (!match) return null;
+  try {
+    const inner = JSON.parse(match[1]);
+    if (typeof inner === "string" && inner.length > 200) return inner;
+  } catch {
+    // Not valid JSON — not a dc bundle we can extract
+  }
+  return null;
 }
 
 // For bundled SPAs the content is inside compressed JS — static extraction yields
@@ -132,6 +151,29 @@ function findLocalDesignFile(fileParam: string | null): string | null {
   return null;
 }
 
+// Try to load a local copy of a claude.ai/design file. Returns {raw, source} on
+// success, or null if no matching local file exists. Used both when the fetch
+// errors (403/network) and when the fetch succeeds but returns the app shell
+// instead of the dc bundle (200 with SPA content).
+function tryClaudeLocalFallback(
+  linkOrPath: string,
+  reason: string,
+): { raw: string; source: "file" } | null {
+  if (!linkOrPath.includes("claude.ai/design/")) return null;
+  try {
+    const urlObj = new URL(linkOrPath);
+    const fileParam = urlObj.searchParams.get("file");
+    const localFile = findLocalDesignFile(fileParam);
+    if (localFile && existsSync(localFile)) {
+      console.log(`[intake] ${reason}. Falling back to local design file: ${localFile}`);
+      return { raw: readFileSync(localFile, "utf8"), source: "file" };
+    }
+  } catch {
+    // URL parse failure or fs error — caller decides whether to re-throw
+  }
+  return null;
+}
+
 export async function intake(linkOrPath: string, fetchFn?: typeof fetch): Promise<IntakeResult> {
   let raw: string;
   let source: "url" | "file";
@@ -163,21 +205,13 @@ export async function intake(linkOrPath: string, fetchFn?: typeof fetch): Promis
       raw = await res.text();
       source = "url";
     } catch (err) {
-      if (linkOrPath.includes("claude.ai/design/")) {
-        try {
-          const urlObj = new URL(linkOrPath);
-          const fileParam = urlObj.searchParams.get("file");
-          const localFile = findLocalDesignFile(fileParam);
-          if (localFile && existsSync(localFile)) {
-            console.log(`[intake] Fetch failed (${err instanceof Error ? err.message : String(err)}). Falling back to local design file: ${localFile}`);
-            raw = readFileSync(localFile, "utf8");
-            source = "file";
-          } else {
-            throw err;
-          }
-        } catch (fallbackErr) {
-          throw err;
-        }
+      const fallback = tryClaudeLocalFallback(
+        linkOrPath,
+        `Fetch failed (${err instanceof Error ? err.message : String(err)})`,
+      );
+      if (fallback) {
+        raw = fallback.raw;
+        source = fallback.source;
       } else {
         throw err;
       }
@@ -190,14 +224,49 @@ export async function intake(linkOrPath: string, fetchFn?: typeof fetch): Promis
     source = "file";
   }
 
-  const extracted = extractSections(raw);
-  const hadHeadings = /<h[1-3][^>]*>/i.test(raw);
+  // For Claude .dc.html design-companion files the real HTML is embedded inside a
+  // JSON-encoded __bundler/template script. Unwrap it before section extraction so
+  // downstream phases see actual design content instead of the "Unpacking…" SPA shell.
+  const designHtml = extractDcBundleTemplate(raw) ?? raw;
+
+  const extracted = extractSections(designHtml);
+  const hadHeadings = /<h[1-3][^>]*>/i.test(designHtml);
   // use extracted if: headings found (structure present) OR text is long enough
   // fall back to SPA hint only when: no headings AND content too short (bundled/compressed app)
-  const normalized =
-    hadHeadings || extracted.text.length >= MIN_CONTENT_LENGTH
-      ? extracted.text
-      : spaFallback(linkOrPath, raw);
+  let isSpa = !hadHeadings && extracted.text.length < MIN_CONTENT_LENGTH;
 
-  return { source, raw, normalized };
+  // The URL may have returned 200 with the claude.ai app shell instead of the dc
+  // bundle (common when the share link serves the web-app wrapper, not the file
+  // directly). If we got SPA content from a URL, try the local file before giving up.
+  if (isSpa && source === "url") {
+    const fallback = tryClaudeLocalFallback(
+      linkOrPath,
+      "Fetch returned app-shell SPA (not the dc bundle)",
+    );
+    if (fallback) {
+      const fbDesignHtml = extractDcBundleTemplate(fallback.raw) ?? fallback.raw;
+      const fbExtracted = extractSections(fbDesignHtml);
+      const fbHadHeadings = /<h[1-3][^>]*>/i.test(fbDesignHtml);
+      const fbIsSpa = !fbHadHeadings && fbExtracted.text.length < MIN_CONTENT_LENGTH;
+      if (!fbIsSpa) {
+        // Local file is richer — use it
+        raw = fallback.raw;
+        source = fallback.source;
+        isSpa = false;
+        return { source, raw, normalized: fbExtracted.text, isSpa };
+      }
+    }
+  }
+
+  const normalized = isSpa ? spaFallback(linkOrPath, raw) : extracted.text;
+
+  if (isSpa) {
+    console.warn(
+      `[intake] SPA/bundle detected — static extraction yielded too little content. ` +
+        `The design file at ${linkOrPath} must be opened directly by the INTAKE skill. ` +
+        `Downstream phases will receive only the SPA hint, not a real design summary.`,
+    );
+  }
+
+  return { source, raw, normalized, isSpa };
 }

@@ -46,6 +46,17 @@ describe("parseBrief", () => {
     expect(brief.project).toBe("Bare");
     expect(brief.decisions).toEqual({});
   });
+
+  it("auto-corrects a doubled @ in the recipient decision", () => {
+    const brief = parseBrief(`# BRIEF
+
+**Project:** Test
+
+## Decisions
+- recipient: dev@@bitcot.com
+`);
+    expect(brief.decisions.recipient).toBe("dev@bitcot.com");
+  });
 });
 
 describe("parsePolicy", () => {

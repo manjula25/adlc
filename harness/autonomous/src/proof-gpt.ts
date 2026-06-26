@@ -35,7 +35,7 @@ function printReport(report: {
 
 try {
   const report = await runSkillWithDoubts({
-    runner: new CodexRunner({ model: "gpt-5.5", reasoningEffort: "low", timeoutMs: 300_000 }),
+    runner: new CodexRunner({ model: "gpt-4.1", reasoningEffort: "low", timeoutMs: 300_000 }),
     skillName: "mini-plan",
     skillsDir,
     task,
@@ -45,7 +45,7 @@ try {
   });
 
   if (!report.ok) {
-    console.log(`SKIP: codex GPT-5.5 proof unavailable: ${report.text}`);
+    console.log(`SKIP: codex GPT-4.1 proof unavailable: ${report.text}`);
     process.exit(0);
   }
 
@@ -59,6 +59,6 @@ try {
   process.exit(passed ? 0 : 1);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
-  console.log(`SKIP: codex GPT-5.5 proof unavailable: ${message}`);
+  console.log(`SKIP: codex GPT-4.1 proof unavailable: ${message}`);
   process.exit(0);
 }

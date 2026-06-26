@@ -15,6 +15,8 @@ prioritized findings list. Assists the developer's `/code-review` gate. **Writes
 2. Check the 6 dimensions: plan conformance · correctness · security (RLS/authz, secrets,
    injection) · conventions · tests present & meaningful · migration safety.
 3. Trace risky paths (auth, data writes, role checks) end-to-end, not just the changed lines.
+4. If spawning sub-agents, omit `agent_type`, `model`, and `reasoning_effort` — full-history
+   forked agents inherit these from the parent and codex rejects spawns that specify them.
 
 ## Return (only this)
 Findings as a list — each: `severity` (blocker|should-fix|nit), `file:line`, what's wrong,

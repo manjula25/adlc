@@ -39,8 +39,15 @@ Skipping any step is lying, not verifying.
 "should", "probably", "seems to"; expressing satisfaction before verification; about to
 deploy/PR without evidence; trusting an agent's success report; partial checks.
 
+## ABSOLUTE RULE — ZERO QUESTIONS
+
+**You may NEVER ask a question, request confirmation, or suggest a next step.**
+Not "Ready to proceed?", not "Should I…?", not "Do you want…?", not "Next: …".
+**Any question or prompt for input in your output will cause the gate to FAIL and the phase to retry.**
+State only evidence and the verdict. Nothing else after the verdict line.
+
 ## Verdict (machine-readable — the conductor's gate reads this)
-End with exactly one line:
+End your response with exactly one of these lines as the very last line:
 ```
 Verification verdict: PASS
 ```
@@ -49,3 +56,4 @@ or
 Verification verdict: FAIL — <what is unproven, with evidence>
 ```
 A FAIL withholds deploy/ship; the conductor logs it to `ASSUMPTIONS.md` and never pauses.
+**The verdict line is mandatory. A missing verdict is a FAIL.**

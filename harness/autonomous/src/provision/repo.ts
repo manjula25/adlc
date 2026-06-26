@@ -1,5 +1,14 @@
 import { execSync } from "node:child_process";
 
+// Read git identity from env vars so commits aren't tied to the hardcoded service account.
+// Operators set ADLC_GIT_EMAIL / ADLC_GIT_NAME in their environment; falls back to the
+// built-in service account when absent.
+function gitIdentityFlags(): string {
+  const email = process.env.ADLC_GIT_EMAIL ?? "adlc@bitcot.com";
+  const name = process.env.ADLC_GIT_NAME ?? "ADLC";
+  return `-c user.email=${email} -c user.name="${name}"`;
+}
+
 export interface RepoProvisionArgs {
   org: string;
   name: string;
@@ -60,7 +69,7 @@ export function buildBaseCommitCommands(repoDir: string, baseBranch: string): st
   const git = `git -C "${repoDir}"`;
   return [
     `${git} init -q -b ${baseBranch}`,
-    `${git} -c user.email=adlc@bitcot.com -c user.name=ADLC commit -q --allow-empty -m "ADLC: init"`,
+    `${git} ${gitIdentityFlags()} commit -q --allow-empty -m "ADLC: init"`,
   ];
 }
 
@@ -72,7 +81,7 @@ export function buildFeatureCommitCommands(repoDir: string, featureBranch: strin
   return [
     `${git} checkout -B ${featureBranch}`,
     `${git} add -A`,
-    `${git} diff --cached --quiet || ${git} -c user.email=adlc@bitcot.com -c user.name=ADLC commit -q -m "ADLC: generated app"`,
+    `${git} diff --cached --quiet || ${git} ${gitIdentityFlags()} commit -q -m "ADLC: generated app"`,
   ];
 }
 

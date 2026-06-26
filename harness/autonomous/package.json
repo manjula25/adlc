@@ -6,7 +6,8 @@
     "conductor": "src/cli.ts"
   },
   "scripts": {
-    "conductor": "node --import tsx src/cli.ts",
+    "conductor": "node --env-file=.env.local --import tsx src/cli.ts run",
+    "conductor:resume": "node --env-file=.env.local --import tsx src/cli.ts run --resume",
     "proof": "tsx src/proof.ts",
     "proof:gpt": "node --import tsx src/proof-gpt.ts",
     "proof:unit": "vitest run",
